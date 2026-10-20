@@ -1,0 +1,14 @@
+{
+  "name": "ks-studio-noginsk-github",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node preview.mjs",
+    "test": "node --test demo.test.mjs",
+    "check": "node check.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

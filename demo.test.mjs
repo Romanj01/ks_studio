@@ -1,0 +1,60 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {demoRequest} from './autonomous-demo.js';
+import {requestJson} from './request.js';
+import {today} from './availability.js';
+
+const api=(path,method='GET',body,token)=>demoRequest(new URL('api'+path,import.meta.url),{method,headers:token?{Authorization:'Bearer '+token}:{},body:body===undefined?undefined:JSON.stringify(body)});
+test('Static demo: booking, account, administration, photos and reset without a server',async()=>{
+  // Node has no IndexedDB: exercise the same fallback used when storage is denied.
+  const fetchBefore=globalThis.fetch;
+  const channelBefore=globalThis.BroadcastChannel;
+  globalThis.BroadcastChannel=undefined;
+  globalThis.fetch=()=>{throw Error('Static demo must not call a server');};
+  globalThis.document={body:{dataset:{demo:'1',demoStorage:'browser'}}};
+  try{
+    await api('/demo/reset','POST',{});
+    const publicData=await requestJson(new URL('api/public',import.meta.url));
+    assert.equal(publicData.settings.name,'KS STUDIO');
+    assert.equal(publicData.services.length,4);
+    const date=new Date(today()+'T12:00:00Z');date.setUTCDate(date.getUTCDate()+1);
+    const day=date.toISOString().slice(0,10);
+    const windows=await api('/slots?service=wash&date='+day);
+    const time=windows.find(s=>s.available).time;
+    const booking=await api('/bookings','POST',{service:'wash',date:day,time,name:'Демо клиент',phone:'+7 (999) 123-45-67',car:'Demo car'});
+    assert.equal(booking.booking.status,'pending');
+    assert.ok(booking.guest.token);
+    await assert.rejects(api('/guest/'+booking.guest.id),{status:404});
+    await api('/guest/'+booking.guest.id,'PATCH',{action:'message',message:'Проверка демонстрации'},booking.guest.token);
+    const registration=await api('/auth/register','POST',{email:'demo@example.test',name:'Демо клиент',phone:'+7 (999) 123-45-67',guestId:booking.guest.id,guestToken:booking.guest.token});
+    const proof=new URL(registration.demoLink).hash.slice('#verify='.length);
+    const account=await api('/auth/verify','POST',{token:proof,password:'demo-pass-12345'});
+    const client=await api('/client','GET',undefined,account.token);
+    assert.equal(client.bookings.length,1);
+    assert.equal(client.bookings[0].messages[0].text,'Проверка демонстрации');
+    assert.ok((await api('/client/login','POST',{phone:'+7 (999) 123-45-67',password:'demo-pass-12345'})).token);
+    await assert.rejects(api('/client/login','POST',{phone:'+7 (999) 123-45-67',password:'incorrect'}),{status:401});
+    await assert.rejects(api('/admin'),{status:401});
+    const admin=await api('/admin/login','POST',{login:'admin',password:'0123456789'});
+    await api('/admin/bookings/'+booking.booking.id,'PATCH',{status:'confirmed'},admin.token);
+    assert.equal((await api('/client','GET',undefined,account.token)).bookings[0].status,'confirmed');
+    await api('/client/bookings/'+booking.booking.id,'PATCH',{action:'cancel'},account.token);
+    await api('/admin/masters','PUT',{masters:[{id:'demo-master',name:'Демо мастер',specialty:'Детейлинг',active:true,serviceIds:['wash']}]},admin.token);
+    const byMaster=await api('/bookings','POST',{service:'wash',date:day,mode:'master',masterId:'demo-master',name:'Другой клиент',phone:'+7 (999) 999-99-99',car:'Another demo car'});
+    assert.equal(byMaster.booking.status,'confirmed');
+    const link=await api('/client/telegram/link','POST',{},account.token);
+    await api('/client/telegram/demo-start','POST',{},account.token);
+    await api('/client/telegram/confirm','POST',{id:link.pending.id},account.token);
+    assert.ok((await api('/client','GET',undefined,account.token)).telegram.linked);
+    const reset=await api('/client/telegram/demo-reset','POST',{},account.token);
+    assert.ok(reset.demoLink.includes('#reset='));
+    const photo=new Blob([new Uint8Array([137,80,78,71,13,10,26,10,0])],{type:'image/png'});
+    const upload=await demoRequest(new URL('api/admin/uploads',import.meta.url),{method:'POST',headers:{Authorization:'Bearer '+admin.token},body:photo});
+    const settings=(await api('/public')).settings;
+    await api('/admin/settings','PUT',{...settings,heroImage:upload.url,name:'Демо студия'},admin.token);
+    assert.equal((await api('/public')).settings.heroImage,upload.url);
+    await api('/demo/reset','POST',{});
+    assert.equal((await api('/public')).settings.name,'KS STUDIO');
+    await assert.rejects(api('/admin','GET',undefined,admin.token),{status:401});
+  }finally{globalThis.fetch=fetchBefore;globalThis.BroadcastChannel=channelBefore;delete globalThis.document;}
+});
